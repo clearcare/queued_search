@@ -23,7 +23,10 @@ settings.configure(
     },
     HAYSTACK_SIGNAL_PROCESSOR='queued_search.signals.QueuedSignalProcessor',
     QUEUE_BACKEND='dummy',
-    SEARCH_QUEUE_LOG_LEVEL=logging.DEBUG
+    SEARCH_QUEUE_LOG_LEVEL=logging.DEBUG,
+    REDIS_HOST='localhost',
+    REDIS_PORT=6379,
+    REDIS_DB=0,
 )
 
 

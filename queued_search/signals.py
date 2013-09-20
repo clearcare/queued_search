@@ -1,8 +1,16 @@
 from queues import queues
+
+from django.conf import settings
 from django.db import models
+
+from haystack import connections
+from haystack.exceptions import NotHandled
 from haystack.signals import BaseSignalProcessor
-from haystack.utils import get_identifier
+from haystack.utils import default_get_identifier
+
 from queued_search.utils import get_queue_name
+
+SKIP_NOINDEX = getattr(settings, 'SEARCH_QUEUE_SKIP_NOINDEX', True)
 
 
 class QueuedSignalProcessor(BaseSignalProcessor):
@@ -30,6 +38,13 @@ class QueuedSignalProcessor(BaseSignalProcessor):
             # ...or...
             ``delete:weblog.entry.8``
         """
-        message = "%s:%s" % (action, get_identifier(instance))
+        if SKIP_NOINDEX:
+            # Check if the model even has a ``SearchIndex`` implementation.
+            try:
+                connections['default'].get_unified_index().get_index(instance.__class__)
+            except NotHandled:
+                return False
+
+        message = "%s:%s" % (action, default_get_identifier(instance))
         queue = queues.Queue(get_queue_name())
         return queue.write(message)
