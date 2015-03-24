@@ -1,11 +1,10 @@
 import logging
-from queues import queues, QueueException
 from django.core.management import call_command
 from django.test import TestCase
-from haystack import connections
 from haystack.query import SearchQuerySet
 from queued_search.management.commands.process_search_queue import Command as ProcessSearchQueueCommand
-from queued_search.utils import get_queue_name
+from queued_search.redis import queue
+
 from .models import Note
 
 
@@ -20,37 +19,38 @@ assertable = AssertableHandler()
 logging.getLogger('queued_search').addHandler(assertable)
 
 
+def clear_queue():
+    while True:
+        item = queue.pop()
+        if not item:
+            break
+
+
 class QueuedSearchIndexTestCase(TestCase):
     def setUp(self):
         super(QueuedSearchIndexTestCase, self).setUp()
 
-        # Nuke the queue.
-        queues.delete_queue(get_queue_name())
-
         # Nuke the index.
         call_command('clear_index', interactive=False, verbosity=0)
 
-        # Get a queue connection so we can poke at it.
-        self.queue = queues.Queue(get_queue_name())
-
     def test_update(self):
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
-        note1 = Note.objects.create(
+        Note.objects.create(
             title='A test note',
             content='Because everyone loves test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
-        note2 = Note.objects.create(
+        Note.objects.create(
             title='Another test note',
             content='More test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
 
         note3 = Note.objects.create(
             title='Final test note',
@@ -58,24 +58,27 @@ class QueuedSearchIndexTestCase(TestCase):
             author='Joe'
         )
 
-        self.assertEqual(len(self.queue), 3)
+        self.assertEqual(len(queue), 3)
 
         note3.title = 'Final test note FOR REAL'
         note3.save()
 
-        self.assertEqual(len(self.queue), 4)
+        self.assertEqual(len(queue), 4)
 
         # Pull the whole queue.
         messages = []
 
-        try:
-            while True:
-                messages.append(self.queue.read())
-        except QueueException:
-            # We're out of queued bits.
-            pass
+        while True:
+            messages.append(queue.pop())
 
-        self.assertEqual(messages, [u'update:tests.note.1', u'update:tests.note.2', u'update:tests.note.3', u'update:tests.note.3'])
+        self.assertEqual(
+            messages, [
+                'update:tests.note.1',
+                'update:tests.note.2',
+                'update:tests.note.3',
+                'update:tests.note.3',
+            ]
+        )
 
     def test_delete(self):
         note1 = Note.objects.create(
@@ -94,32 +97,27 @@ class QueuedSearchIndexTestCase(TestCase):
             author='Joe'
         )
 
-        # Dump the queue in preparation for the deletes.
-        queues.delete_queue(get_queue_name())
-        self.queue = queues.Queue(get_queue_name())
+        # Clear the queue in preparation for the deletes.
+        clear_queue()
 
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
         note1.delete()
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
         note2.delete()
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
         note3.delete()
-        self.assertEqual(len(self.queue), 3)
+        self.assertEqual(len(queue), 3)
 
         # Pull the whole queue.
         messages = []
 
-        try:
-            while True:
-                messages.append(self.queue.read())
-        except QueueException:
-            # We're out of queued bits.
-            pass
+        while True:
+            messages.append(queue.pop())
 
-        self.assertEqual(messages, [u'delete:tests.note.1', u'delete:tests.note.2', u'delete:tests.note.3'])
+        self.assertEqual(messages, ['delete:tests.note.1', 'delete:tests.note.2', 'delete:tests.note.3'])
 
     def test_complex(self):
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
         note1 = Note.objects.create(
             title='A test note',
@@ -127,18 +125,18 @@ class QueuedSearchIndexTestCase(TestCase):
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
-        note2 = Note.objects.create(
+        Note.objects.create(
             title='Another test note',
             content='More test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
 
         note1.delete()
-        self.assertEqual(len(self.queue), 3)
+        self.assertEqual(len(queue), 3)
 
         note3 = Note.objects.create(
             title='Final test note',
@@ -146,41 +144,45 @@ class QueuedSearchIndexTestCase(TestCase):
             author='Joe'
         )
 
-        self.assertEqual(len(self.queue), 4)
+        self.assertEqual(len(queue), 4)
 
         note3.title = 'Final test note FOR REAL'
         note3.save()
 
-        self.assertEqual(len(self.queue), 5)
+        self.assertEqual(len(queue), 5)
 
         note3.delete()
-        self.assertEqual(len(self.queue), 6)
+        self.assertEqual(len(queue), 6)
 
         # Pull the whole queue.
         messages = []
 
-        try:
-            while True:
-                messages.append(self.queue.read())
-        except QueueException:
-            # We're out of queued bits.
-            pass
+        while True:
+            message = queue.pop()
+            if message is None:
+                break
+            messages.append(message)
 
-        self.assertEqual(messages, [u'update:tests.note.1', u'update:tests.note.2', u'delete:tests.note.1', u'update:tests.note.3', u'update:tests.note.3', u'delete:tests.note.3'])
+        self.assertEqual(
+            messages, [
+                'update:tests.note.1',
+                'update:tests.note.2',
+                'delete:tests.note.1',
+                'update:tests.note.3',
+                'update:tests.note.3',
+                'delete:tests.note.3',
+            ],
+        )
 
 
 class ProcessSearchQueueTestCase(TestCase):
     def setUp(self):
         super(ProcessSearchQueueTestCase, self).setUp()
 
-        # Nuke the queue.
-        queues.delete_queue(get_queue_name())
+        clear_queue()
 
         # Nuke the index.
         call_command('clear_index', interactive=False, verbosity=0)
-
-        # Get a queue connection so we can poke at it.
-        self.queue = queues.Queue(get_queue_name())
 
         # Clear out and capture log messages.
         AssertableHandler.stowed_messages = []
@@ -215,7 +217,7 @@ class ProcessSearchQueueTestCase(TestCase):
         self.assertEqual(self.psqc.split_obj_identifier('wtfmate'), (None, None))
 
     def test_processing(self):
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
         note1 = Note.objects.create(
             title='A test note',
@@ -223,18 +225,18 @@ class ProcessSearchQueueTestCase(TestCase):
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
-        note2 = Note.objects.create(
+        Note.objects.create(
             title='Another test note',
             content='More test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
 
         note1.delete()
-        self.assertEqual(len(self.queue), 3)
+        self.assertEqual(len(queue), 3)
 
         note3 = Note.objects.create(
             title='Final test note',
@@ -242,15 +244,15 @@ class ProcessSearchQueueTestCase(TestCase):
             author='Joe'
         )
 
-        self.assertEqual(len(self.queue), 4)
+        self.assertEqual(len(queue), 4)
 
         note3.title = 'Final test note FOR REAL'
         note3.save()
 
-        self.assertEqual(len(self.queue), 5)
+        self.assertEqual(len(queue), 5)
 
         note3.delete()
-        self.assertEqual(len(self.queue), 6)
+        self.assertEqual(len(queue), 6)
 
         self.assertEqual(AssertableHandler.stowed_messages, [])
 
@@ -287,19 +289,19 @@ class ProcessSearchQueueTestCase(TestCase):
         self.assertEqual(SearchQuerySet().all().count(), 1)
 
     def test_requeuing(self):
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
-        note1 = Note.objects.create(
+        Note.objects.create(
             title='A test note',
             content='Because everyone loves test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
         # Write a failed message.
-        self.queue.write('update:tests.note.abc')
-        self.assertEqual(len(self.queue), 2)
+        queue.enqueue('update:tests.note.abc')
+        self.assertEqual(len(queue), 2)
 
         self.assertEqual(AssertableHandler.stowed_messages, [])
 
@@ -312,20 +314,18 @@ class ProcessSearchQueueTestCase(TestCase):
             # of things afterward.
             pass
 
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
 
         # Pull the whole queue.
         messages = []
-
-        try:
-            while True:
-                messages.append(self.queue.read())
-        except QueueException:
-            # We're out of queued bits.
-            pass
+        while True:
+            message = queue.read()
+            if not message:
+                break
+            messages.append(message)
 
         self.assertEqual(messages, [u'update:tests.note.1', 'update:tests.note.abc'])
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
         self.assertEqual(AssertableHandler.stowed_messages, [
             'Starting to process the queue.',
@@ -342,13 +342,13 @@ class ProcessSearchQueueTestCase(TestCase):
         ])
 
         # Start over.
-        note1 = Note.objects.create(
+        Note.objects.create(
             title='A test note',
             content='Because everyone loves test data.',
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
         note2 = Note.objects.create(
             title='Another test note',
@@ -356,14 +356,14 @@ class ProcessSearchQueueTestCase(TestCase):
             author='Daniel'
         )
 
-        self.assertEqual(len(self.queue), 2)
+        self.assertEqual(len(queue), 2)
 
         # Now delete it.
         note2.delete()
 
         # Write a failed message.
-        self.queue.write('delete:tests.note.abc')
-        self.assertEqual(len(self.queue), 4)
+        queue.enqueue('delete:tests.note.abc')
+        self.assertEqual(len(queue), 4)
 
         AssertableHandler.stowed_messages = []
         self.assertEqual(AssertableHandler.stowed_messages, [])
@@ -378,20 +378,18 @@ class ProcessSearchQueueTestCase(TestCase):
             pass
 
         # Everything but the bad bit of data should have processed.
-        self.assertEqual(len(self.queue), 1)
+        self.assertEqual(len(queue), 1)
 
         # Pull the whole queue.
         messages = []
-
-        try:
-            while True:
-                messages.append(self.queue.read())
-        except QueueException:
-            # We're out of queued bits.
-            pass
+        while True:
+            message = queue.pop()
+            if message is None:
+                break
+            messages.append(message)
 
         self.assertEqual(messages, ['delete:tests.note.abc'])
-        self.assertEqual(len(self.queue), 0)
+        self.assertEqual(len(queue), 0)
 
         self.assertEqual(AssertableHandler.stowed_messages, [
             'Starting to process the queue.',

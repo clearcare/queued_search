@@ -1,5 +1,3 @@
-from queues import queues
-
 from django.conf import settings
 from django.db import models
 
@@ -8,7 +6,8 @@ from haystack.exceptions import NotHandled
 from haystack.signals import BaseSignalProcessor
 from haystack.utils import default_get_identifier
 
-from queued_search.utils import get_queue_name, rec_getattr
+from .redis import queue
+from .utils import rec_getattr
 
 SKIP_NOINDEX = getattr(settings, 'SEARCH_QUEUE_SKIP_NOINDEX', True)
 
@@ -66,6 +65,4 @@ class QueuedSignalProcessor(BaseSignalProcessor):
             except NotHandled:
                 return False
 
-        message = "%s:%s" % (action, default_get_identifier(instance))
-        queue = queues.Queue(get_queue_name())
-        return queue.write(message)
+        return queue.enqueue(action, default_get_identifier(instance))

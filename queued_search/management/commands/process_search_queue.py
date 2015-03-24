@@ -1,9 +1,9 @@
+from __future__ import absolute_import
+
 import datetime
 import logging
-import redis
 
 from optparse import make_option
-from queues import queues, QueueException
 
 from django.conf import settings
 from django.core.exceptions import (
@@ -16,7 +16,11 @@ from django.db.models.loading import get_model
 from haystack import connections
 from haystack.constants import DEFAULT_ALIAS
 from haystack.exceptions import NotHandled
-from queued_search.utils import get_queue_name
+
+from queued_search.redis import (
+    queue,
+    redis_client,
+)
 
 
 DEFAULT_BATCH_SIZE = None
@@ -26,12 +30,6 @@ RETRY_TTL = getattr(settings, 'SEARCH_QUEUE_RETRY_TTL', 300)  # 5 minutes
 
 logging.basicConfig(
     level=LOG_LEVEL
-)
-
-redis_client = redis.StrictRedis(
-    host=settings.REDIS_HOST,
-    port=settings.REDIS_PORT,
-    db=settings.REDIS_DB,
 )
 
 
@@ -63,13 +61,6 @@ class Command(NoArgsCommand):
     def handle_noargs(self, **options):
         self.batchsize = options.get('batchsize', DEFAULT_BATCH_SIZE) or 1000
         self.using = options.get('using')
-        # Setup the queue.
-        self.queue = queues.Queue(get_queue_name())
-
-        # Check if enough is there to process.
-        if not len(self.queue):
-            self.log.debug("Not enough items in the queue to process.")
-            return
 
         self.log.debug("Starting to process the queue.")
         start_time = datetime.datetime.now()
@@ -77,18 +68,13 @@ class Command(NoArgsCommand):
 
         # Consume the whole queue first so that we can group update/deletes
         # for efficiency.
-        try:
-            while True:
-                message = self.queue.read()
+        while True:
+            message = queue.pop()
+            if not message:
+                break
 
-                if not message:
-                    break
-
-                self.process_message(message)
-                items += 1
-        except QueueException:
-            # We've run out of items in the queue.
-            pass
+            self.process_message(message)
+            items += 1
 
         self.log.debug("Queue consumed %s items in %s." % (items, datetime.datetime.now() - start_time))
         start_time = datetime.datetime.now()
@@ -111,30 +97,30 @@ class Command(NoArgsCommand):
         update_count = 0
         delete_count = 0
 
-        for update in self.actions['update']:
-            if not update in self.processed_updates:
-                self.queue.write('update:%s' % update)
+        for object_id in self.actions['update']:
+            if not object_id in self.processed_updates:
+                queue.enqueue_update(object_id)
                 update_count += 1
 
-        for delete in self.actions['delete']:
-            if not delete in self.processed_deletes:
-                self.queue.write('delete:%s' % delete)
+        for object_id in self.actions['delete']:
+            if not object_id in self.processed_deletes:
+                queue.enqueue_delete(object_id)
                 delete_count += 1
 
         self.log.info('Requeued %d updates and %d deletes.' % (update_count, delete_count))
 
-    def requeue_object(self, object_id, error_message):
+    def requeue_object(self, action_object_id, error_message):
 
-        requeue_cmd = 'requeued_{}'.format(object_id)
+        requeue_cmd = 'requeued_{}'.format(action_object_id)
 
         if redis_client.exists(requeue_cmd):
             count = redis_client.incr(requeue_cmd)
             if count > RETRY_ATTEMPTS:
                 self.log.info('Message from process_search_queue', extra={
-                    'action': 'Requeued {} {}x stopping retry'.format(object_id, count),
+                    'action': 'Requeued {} {}x stopping retry'.format(action_object_id, count),
                     'error': error_message,
                 })
-                redis_client.delete(object_id)
+                redis_client.delete(action_object_id)
                 return
         else:
             count = 1
@@ -143,7 +129,7 @@ class Command(NoArgsCommand):
         self.log.info('Message from process_search_queue', extra={
             'error': '{}: requeued {} times'.format(error_message, count),
         })
-        self.queue.write(object_id)
+        queue.enqueue(action_object_id)
 
     def process_message(self, message):
         """

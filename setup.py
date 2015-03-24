@@ -17,6 +17,14 @@ setup(
         'queued_search.management',
         'queued_search.management.commands',
     ],
+    install_requires=[],
+    setup_requires=[],
+    tests_require=[
+        'tox',
+        'redis',
+        'django',
+        'flake8',
+    ],
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Environment :: Web Environment',
