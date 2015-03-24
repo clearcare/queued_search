@@ -129,7 +129,7 @@ class Command(NoArgsCommand):
         self.log.info('Message from process_search_queue', extra={
             'error': '{}: requeued {} times'.format(error_message, count),
         })
-        queue.enqueue(action_object_id)
+        queue.enqueue(*action_object_id.split(':'))
 
     def process_message(self, message):
         """

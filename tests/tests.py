@@ -19,11 +19,14 @@ assertable = AssertableHandler()
 logging.getLogger('queued_search').addHandler(assertable)
 
 
-def clear_queue():
+def drain_queue():
+    messages = []
     while True:
-        item = queue.pop()
-        if not item:
+        message = queue.pop()
+        if not message:
             break
+        messages.append(message)
+    return messages
 
 
 class QueuedSearchIndexTestCase(TestCase):
@@ -66,10 +69,7 @@ class QueuedSearchIndexTestCase(TestCase):
         self.assertEqual(len(queue), 4)
 
         # Pull the whole queue.
-        messages = []
-
-        while True:
-            messages.append(queue.pop())
+        messages = drain_queue()
 
         self.assertEqual(
             messages, [
@@ -98,7 +98,7 @@ class QueuedSearchIndexTestCase(TestCase):
         )
 
         # Clear the queue in preparation for the deletes.
-        clear_queue()
+        drain_queue()
 
         self.assertEqual(len(queue), 0)
         note1.delete()
@@ -109,10 +109,7 @@ class QueuedSearchIndexTestCase(TestCase):
         self.assertEqual(len(queue), 3)
 
         # Pull the whole queue.
-        messages = []
-
-        while True:
-            messages.append(queue.pop())
+        messages = drain_queue()
 
         self.assertEqual(messages, ['delete:tests.note.1', 'delete:tests.note.2', 'delete:tests.note.3'])
 
@@ -149,20 +146,13 @@ class QueuedSearchIndexTestCase(TestCase):
         note3.title = 'Final test note FOR REAL'
         note3.save()
 
-        self.assertEqual(len(queue), 5)
+        self.assertEqual(len(queue), 4, queue.peek_all())
 
         note3.delete()
-        self.assertEqual(len(queue), 6)
+        self.assertEqual(len(queue), 5)
 
         # Pull the whole queue.
-        messages = []
-
-        while True:
-            message = queue.pop()
-            if message is None:
-                break
-            messages.append(message)
-
+        messages = drain_queue()
         self.assertEqual(
             messages, [
                 'update:tests.note.1',
@@ -179,7 +169,7 @@ class ProcessSearchQueueTestCase(TestCase):
     def setUp(self):
         super(ProcessSearchQueueTestCase, self).setUp()
 
-        clear_queue()
+        drain_queue()
 
         # Nuke the index.
         call_command('clear_index', interactive=False, verbosity=0)
@@ -249,10 +239,10 @@ class ProcessSearchQueueTestCase(TestCase):
         note3.title = 'Final test note FOR REAL'
         note3.save()
 
-        self.assertEqual(len(queue), 5)
+        self.assertEqual(len(queue), 4, queue.peek_all())
 
         note3.delete()
-        self.assertEqual(len(queue), 6)
+        self.assertEqual(len(queue), 5)
 
         self.assertEqual(AssertableHandler.stowed_messages, [])
 
@@ -300,8 +290,8 @@ class ProcessSearchQueueTestCase(TestCase):
         self.assertEqual(len(queue), 1)
 
         # Write a failed message.
-        queue.enqueue('update:tests.note.abc')
-        self.assertEqual(len(queue), 2)
+        queue.enqueue('update', 'tests.note.abc')
+        self.assertEqual(len(queue), 2, queue.peek_all())
 
         self.assertEqual(AssertableHandler.stowed_messages, [])
 
@@ -314,16 +304,10 @@ class ProcessSearchQueueTestCase(TestCase):
             # of things afterward.
             pass
 
-        self.assertEqual(len(queue), 2)
+        self.assertEqual(len(queue), 2, queue.peek_all())
 
         # Pull the whole queue.
-        messages = []
-        while True:
-            message = queue.read()
-            if not message:
-                break
-            messages.append(message)
-
+        messages = drain_queue()
         self.assertEqual(messages, [u'update:tests.note.1', 'update:tests.note.abc'])
         self.assertEqual(len(queue), 0)
 
@@ -362,7 +346,7 @@ class ProcessSearchQueueTestCase(TestCase):
         note2.delete()
 
         # Write a failed message.
-        queue.enqueue('delete:tests.note.abc')
+        queue.enqueue_delete('tests.note.abc')
         self.assertEqual(len(queue), 4)
 
         AssertableHandler.stowed_messages = []
@@ -381,13 +365,7 @@ class ProcessSearchQueueTestCase(TestCase):
         self.assertEqual(len(queue), 1)
 
         # Pull the whole queue.
-        messages = []
-        while True:
-            message = queue.pop()
-            if message is None:
-                break
-            messages.append(message)
-
+        messages = drain_queue()
         self.assertEqual(messages, ['delete:tests.note.abc'])
         self.assertEqual(len(queue), 0)
 

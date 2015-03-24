@@ -18,11 +18,12 @@ settings.configure(
     HAYSTACK_CONNECTIONS={
         'default': {
             'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
-            'PATH': os.path.join(os.path.dirname(__file__), 'whoosh_index')
+            'PATH': '/tmp/whoosh_index',
         }
     },
     HAYSTACK_SIGNAL_PROCESSOR='queued_search.signals.QueuedSignalProcessor',
-    SEARCH_QUEUE_LOG_LEVEL=logging.DEBUG
+    SEARCH_QUEUE_LOG_LEVEL=logging.DEBUG,
+    QUEUE_REDIS_CONNECTION='localhost:6379',
 )
 
 
